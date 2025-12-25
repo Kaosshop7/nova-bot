@@ -1,44 +1,20 @@
-const { Client, GatewayIntentBits } = require("discord.js");
-const {
-  joinVoiceChannel,
-  createAudioPlayer,
-  createAudioResource,
-  AudioPlayerStatus,
-  StreamType,
-} = require("@discordjs/voice");
-const { spawn } = require("child_process");
+const { Client, GatewayIntentBits } = require('discord.js');
+const { spawn } = require('child_process'); // เก็บไว้ถ้าใช้ ffmpeg
+const ytdl = require('ytdl-core');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource } = require('@discordjs/voice');
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildVoiceStates,
-  ],
+    GatewayIntentBits.MessageContent
+  ]
 });
 
 const PREFIX = "!";
 const servers = new Map();
 
-/* ========== เรียก Python ========== */
-function callPython(url) {
-  return new Promise((resolve) => {
-    const py = spawn("python", ["worker.py", url]);
-    let data = "";
-
-    py.stdout.on("data", (d) => (data += d));
-
-    py.on("close", () => {
-      try {
-        resolve(JSON.parse(data));
-      } catch {
-        resolve({ status: "error" });
-      }
-    });
-  });
-}
-
-/* ========== เล่นเพลงถัดไป (ใช้ ffmpeg) ========== */
+/* ========== เล่นเพลงถัดไป (Node.js ล้วน) ========== */
 async function playNext(guildId) {
   const server = servers.get(guildId);
   if (!server || server.queue.length === 0) {
@@ -48,36 +24,28 @@ async function playNext(guildId) {
   }
 
   const item = server.queue.shift();
-  const res = await callPython(item.url);
 
-  if (res.status !== "ok") {
+  try {
+    // ใช้ ytdl-core + createAudioResource แทน Python worker + ffmpeg
+    const stream = ytdl(item.url, { filter: 'audioonly' });
+    const resource = createAudioResource(stream);
+
+    server.player.play(resource);
+
+    server.player.once('idle', () => playNext(guildId));
+
+  } catch (err) {
     server.text.send("❌ เล่นคลิปนี้ไม่ได้ ข้ามให้อัตโนมัติ");
-    return playNext(guildId);
+    playNext(guildId);
   }
-
-  // 🔥 ffmpeg = ตัวทำให้ “ดังแน่นอน”
-  const ffmpeg = spawn("ffmpeg", [
-    "-reconnect", "1",
-    "-reconnect_streamed", "1",
-    "-reconnect_delay_max", "5",
-    "-i", res.stream,
-    "-analyzeduration", "0",
-    "-loglevel", "0",
-    "-f", "s16le",
-    "-ar", "48000",
-    "-ac", "2",
-    "pipe:1",
-  ]);
-
-  const resource = createAudioResource(ffmpeg.stdout, {
-    inputType: StreamType.Raw,
-  });
-
-  server.player.play(resource);
-  server.text.send(`▶️ **กำลังเล่น:** ${res.title}`);
 }
+const { StreamType, createAudioPlayer, createAudioResource, joinVoiceChannel } = require('@discordjs/voice');
 
-/* ========== Discord ========== */
+/* ========== เล่นเพลงต่อ (ต่อจาก playNext) ========== */
+// ไม่ต้อง spawn ffmpeg เองแล้ว ใช้ ytdl-core + createAudioResource
+// ฟังก์ชันนี้ใช้ stream จาก playNext() แล้ว server.player.play(resource) ก็พร้อม
+
+/* ========== Discord Events ========== */
 client.once("clientReady", () => {
   console.log(`🤖 Online: ${client.user.tag}`);
 });
@@ -86,10 +54,10 @@ client.on("messageCreate", async (msg) => {
   if (msg.author.bot) return;
   if (!msg.content.startsWith(PREFIX)) return;
 
-  const args = msg.content.slice(1).trim().split(" ");
-  const cmd = args.shift();
+  const args = msg.content.slice(PREFIX.length).trim().split(" ");
+  const cmd = args.shift().toLowerCase();
 
-  /* ===== help (ไม่ join VC) ===== */
+  /* ===== !help (ไม่ join VC) ===== */
   if (cmd === "help") {
     return msg.reply(`
 📖 **คู่มือบอทเสียง**
@@ -105,7 +73,6 @@ client.on("messageCreate", async (msg) => {
 • \`!stop\`
 • \`!queue\`
 • \`!help\`
-
 `);
   }
 
@@ -115,10 +82,215 @@ client.on("messageCreate", async (msg) => {
 
   let server = servers.get(msg.guild.id);
 
-  /* ===== play ===== */
+  if (!server) {
+    server = {
+      text: msg.channel,
+      voiceChannel: vc,
+      connection: joinVoiceChannel({
+        channelId: vc.id,
+        guildId: vc.guild.id,
+        adapterCreator: vc.guild.voiceAdapterCreator,
+      }),
+      player: createAudioPlayer(),
+      queue: [],
+    };
+    server.connection.subscribe(server.player);
+    servers.set(msg.guild.id, server);
+  }
+
+  /* ===== !play ===== */
   if (cmd === "play") {
     const url = args[0];
-    if (!url) return msg.reply("❌ กรุณาใส่ลิงก์");
+    if (!url) return msg.reply("❌ กรุณาใส่ลิงก์ YouTube");
+
+    server.queue.push({ url });
+    msg.reply(`✅ เพิ่มคลิปลงคิว: ${url}`);
+
+    if (server.player.state.status !== "playing") {
+      playNext(msg.guild.id);
+    }
+  }
+
+  /* ===== !skip ===== */
+  if (cmd === "skip") {
+    server.player.stop();
+    msg.reply("⏭️ ข้ามเพลงแล้ว");
+  }
+
+  /* ===== !stop ===== */
+  if (cmd === "stop") {
+    server.player.stop();
+    server.connection.destroy();
+    servers.delete(msg.guild.id);
+    msg.reply("⏹️ หยุดเล่นเพลงและออก VC แล้ว");
+  }
+
+  /* ===== !pause ===== */
+  if (cmd === "pause") {
+    server.player.pause();
+    msg.reply("⏸️ หยุดเพลงชั่วคราว");
+  }
+
+  /* ===== !resume ===== */
+  if (cmd === "resume") {
+    server.player.unpause();
+    msg.reply("▶️ เล่นเพลงต่อ");
+  }
+
+  /* ===== !queue ===== */
+  if (cmd === "queue") {
+    if (!server.queue.length) return msg.reply("📭 คิวเพลงว่างอยู่");
+    msg.reply("🎶 คิวเพลง:\n" + server.queue.map((item, i) => `${i+1}. ${item.url}`).join("\n"));
+  }
+});
+
+const { AudioPlayerStatus, createAudioPlayer, createAudioResource, joinVoiceChannel } = require('@discordjs/voice');
+const ytdl = require('ytdl-core');
+
+/* ===== !play ===== */
+if (cmd === "play") {
+  const url = args[0];
+  if (!url) return msg.reply("❌ กรุณาใส่ลิงก์ YouTube");
+
+  if (!server) {
+    const connection = joinVoiceChannel({
+      channelId: vc.id,
+      guildId: msg.guild.id,
+      adapterCreator: msg.guild.voiceAdapterCreator,
+    });
+
+    const player = createAudioPlayer();
+    connection.subscribe(player);
+
+    server = {
+      connection,
+      player,
+      queue: [],
+      text: msg.channel,
+    };
+
+    // event auto play next
+    player.on(AudioPlayerStatus.Idle, () => {
+      playNext(msg.guild.id);
+    });
+
+    servers.set(msg.guild.id, server);
+  }
+
+  server.queue.push({ url });
+  msg.reply(`▶️ เพิ่มคลิปเข้า Queue: ${url}`);
+
+  if (server.player.state.status !== AudioPlayerStatus.Playing) {
+    playNext(msg.guild.id);
+  }
+  return;
+}
+
+/* ===== !pause / !resume / !skip ===== */
+if (!server) return msg.reply("❌ ยังไม่มีเพลง ใช้ !play ก่อน");
+
+if (cmd === "pause") {
+  server.player.pause();
+  return msg.reply("⏸️ พักเสียงแล้ว");
+}
+
+if (cmd === "resume") {
+  server.player.unpause();
+  return msg.reply("▶️ เล่นต่อแล้ว");
+}
+
+if (cmd === "skip") {
+  server.player.stop();
+  return msg.reply("⏭️ ข้ามคลิป");
+}
+/* ========== Imports & Client Setup ========== */
+const { Client, GatewayIntentBits } = require('discord.js');
+const { 
+  AudioPlayerStatus, 
+  createAudioPlayer, 
+  createAudioResource, 
+  joinVoiceChannel, 
+  StreamType 
+} = require('@discordjs/voice');
+const ytdl = require('ytdl-core');
+require('dotenv').config();
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ]
+});
+
+const PREFIX = "!";
+const servers = new Map();
+
+/* ========== เล่นเพลงถัดไป ========== */
+async function playNext(guildId) {
+  const server = servers.get(guildId);
+  if (!server || server.queue.length === 0) {
+    server?.connection.destroy();
+    servers.delete(guildId);
+    return;
+  }
+
+  const item = server.queue.shift();
+
+  try {
+    const stream = ytdl(item.url, { filter: 'audioonly' });
+    const resource = createAudioResource(stream, { inputType: StreamType.Arbitrary });
+
+    server.player.play(resource);
+
+    server.player.once('idle', () => playNext(guildId));
+
+    server.text.send(`▶️ **กำลังเล่น:** ${item.url}`);
+  } catch (err) {
+    server.text.send("❌ เล่นคลิปนี้ไม่ได้ ข้ามให้อัตโนมัติ");
+    playNext(guildId);
+  }
+}
+
+/* ========== Discord Events ========== */
+client.once("clientReady", () => {
+  console.log(`🤖 Online: ${client.user.tag}`);
+});
+
+client.on("messageCreate", async (msg) => {
+  if (msg.author.bot) return;
+  if (!msg.content.startsWith(PREFIX)) return;
+
+  const args = msg.content.slice(PREFIX.length).trim().split(" ");
+  const cmd = args.shift().toLowerCase();
+
+  /* ===== !help ===== */
+  if (cmd === "help") {
+    return msg.reply(`
+📖 **คู่มือบอทเสียง**
+
+🎧 วิธีใช้งาน
+• บอทจะเข้า Voice Channel เฉพาะตอนใช้ \`!play\`
+
+🕹️ คำสั่ง
+• \`!play <ลิงก์>\` → เข้า VC และเล่นเสียง
+• \`!pause\`
+• \`!resume\`
+• \`!skip\`
+• \`!stop\`
+• \`!queue\`
+• \`!help\`
+`);
+  }
+
+  const vc = msg.member.voice.channel;
+  let server = servers.get(msg.guild.id);
+
+  /* ===== !play ===== */
+  if (cmd === "play") {
+    if (!vc) return msg.reply("❌ กรุณาเข้า Voice Channel ก่อน");
+    const url = args[0];
+    if (!url) return msg.reply("❌ กรุณาใส่ลิงก์ YouTube");
 
     if (!server) {
       const connection = joinVoiceChannel({
@@ -137,15 +309,12 @@ client.on("messageCreate", async (msg) => {
         text: msg.channel,
       };
 
-      player.on(AudioPlayerStatus.Idle, () => {
-        playNext(msg.guild.id);
-      });
-
+      player.on(AudioPlayerStatus.Idle, () => playNext(msg.guild.id));
       servers.set(msg.guild.id, server);
     }
 
     server.queue.push({ url });
-    msg.reply("▶️ เพิ่มคลิปเข้า Queue แล้ว");
+    msg.reply(`▶️ เพิ่มคลิปเข้า Queue: ${url}`);
 
     if (server.player.state.status !== AudioPlayerStatus.Playing) {
       playNext(msg.guild.id);
@@ -153,24 +322,27 @@ client.on("messageCreate", async (msg) => {
     return;
   }
 
-  /* ===== ต้องมีเพลงก่อน ===== */
   if (!server) return msg.reply("❌ ยังไม่มีเพลง ใช้ !play ก่อน");
 
+  /* ===== !pause ===== */
   if (cmd === "pause") {
     server.player.pause();
     return msg.reply("⏸️ พักเสียงแล้ว");
   }
 
+  /* ===== !resume ===== */
   if (cmd === "resume") {
     server.player.unpause();
     return msg.reply("▶️ เล่นต่อแล้ว");
   }
 
+  /* ===== !skip ===== */
   if (cmd === "skip") {
     server.player.stop();
     return msg.reply("⏭️ ข้ามคลิป");
   }
 
+  /* ===== !stop ===== */
   if (cmd === "stop") {
     server.queue = [];
     server.player.stop();
@@ -179,10 +351,9 @@ client.on("messageCreate", async (msg) => {
     return msg.reply("⏹️ หยุดทั้งหมดแล้ว");
   }
 
+  /* ===== !queue ===== */
   if (cmd === "queue") {
-    if (server.queue.length === 0)
-      return msg.reply("📭 ไม่มีคลิปใน Queue");
-
+    if (server.queue.length === 0) return msg.reply("📭 ไม่มีคลิปใน Queue");
     return msg.reply(
       "📜 **Queue:**\n" +
         server.queue.map((q, i) => `${i + 1}. ${q.url}`).join("\n")
@@ -190,6 +361,5 @@ client.on("messageCreate", async (msg) => {
   }
 });
 
-require('dotenv').config();
-
+/* ===== Login ===== */
 client.login(process.env.DISCORD_TOKEN);
