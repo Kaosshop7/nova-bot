@@ -78,7 +78,7 @@ async function playNext(guildId) {
 }
 
 /* ========== Discord ========== */
-client.once("ready", () => {
+client.once("clientReady", () => {
   console.log(`🤖 Online: ${client.user.tag}`);
 });
 
