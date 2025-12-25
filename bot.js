@@ -21,7 +21,7 @@ const client = new Client({
 const PREFIX = "!";
 const servers = new Map();
 
-/* ========== เล่นเพลงถัดไป ========== */
+/* ========== Play Next Song ========== */
 async function playNext(guildId) {
   const server = servers.get(guildId);
   if (!server || server.queue.length === 0) {
@@ -33,14 +33,20 @@ async function playNext(guildId) {
   const item = server.queue.shift();
 
   try {
-    const stream = ytdl(item.url, { filter: 'audioonly' });
+    const stream = ytdl(item.url, { 
+      filter: 'audioonly', 
+      highWaterMark: 1 << 27, // 128MB buffer
+      dlChunkSize: 0           // โหลดต่อเนื่อง
+    });
+
     const resource = createAudioResource(stream, { inputType: StreamType.Arbitrary });
-
     server.player.play(resource);
-    server.player.once('idle', () => playNext(guildId));
 
-    server.text.send(`▶️ **กำลังเล่น:** ${item.url}`);
+    // ต่อเพลงต่อเนื่องอัตโนมัติ
+    server.player.once('idle', () => playNext(guildId));
+    server.text.send(`▶️ กำลังเล่น: ${item.url}`);
   } catch (err) {
+    console.error(err);
     server.text.send("❌ เล่นคลิปนี้ไม่ได้ ข้ามให้อัตโนมัติ");
     playNext(guildId);
   }
@@ -61,19 +67,19 @@ client.on("messageCreate", async (msg) => {
   /* ===== !help ===== */
   if (cmd === "help") {
     return msg.reply(`
-📖 **คู่มือบอทเสียง**
+📖 คู่มือบอทเสียง
 
 🎧 วิธีใช้งาน
-• บอทจะเข้า Voice Channel เฉพาะตอนใช้ \`!play\`
+• บอทเข้า VC เฉพาะตอนใช้ !play
 
 🕹️ คำสั่ง
-• \`!play <ลิงก์>\` → เข้า VC และเล่นเสียง
-• \`!pause\`
-• \`!resume\`
-• \`!skip\`
-• \`!stop\`
-• \`!queue\`
-• \`!help\`
+• !play <ลิงก์> → เข้า VC และเล่นเสียง
+• !pause
+• !resume
+• !skip
+• !stop
+• !queue
+• !help
 `);
   }
 
@@ -149,7 +155,7 @@ client.on("messageCreate", async (msg) => {
   if (cmd === "queue") {
     if (server.queue.length === 0) return msg.reply("📭 ไม่มีคลิปใน Queue");
     return msg.reply(
-      "📜 **Queue:**\n" +
+      "📜 Queue:\n" +
         server.queue.map((q, i) => `${i + 1}. ${q.url}`).join("\n")
     );
   }
