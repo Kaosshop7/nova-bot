@@ -96,7 +96,6 @@ client.on("messageCreate", async (msg) => {
 
 🎧 วิธีใช้งาน
 • บอทจะเข้า Voice Channel เฉพาะตอนใช้ \`!play\`
-• ส่งลิงก์เฉยๆ บอทจะไม่ทำอะไร
 
 🕹️ คำสั่ง
 • \`!play <ลิงก์>\` → เข้า VC และเล่นเสียง
@@ -107,10 +106,6 @@ client.on("messageCreate", async (msg) => {
 • \`!queue\`
 • \`!help\`
 
-⚙️ ระบบ
-• Node.js + Discord Voice
-• Python + yt-dlp
-• ffmpeg แปลงเสียง (สำคัญมาก)
 `);
   }
 
@@ -195,4 +190,6 @@ client.on("messageCreate", async (msg) => {
   }
 });
 
-client.login("***REMOVED***");
+require('dotenv').config();
+
+client.login(process.env.DISCORD_TOKEN);
