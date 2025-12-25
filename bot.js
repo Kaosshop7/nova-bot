@@ -37,7 +37,6 @@ async function playNext(guildId) {
     const resource = createAudioResource(stream, { inputType: StreamType.Arbitrary });
 
     server.player.play(resource);
-
     server.player.once('idle', () => playNext(guildId));
 
     server.text.send(`▶️ **กำลังเล่น:** ${item.url}`);

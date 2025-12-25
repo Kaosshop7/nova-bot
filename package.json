@@ -11,6 +11,6 @@
     "@discordjs/voice": "^0.19.0",
     "dotenv": "^17.2.3",
     "opusscript": "^0.0.8",
-    "ytdl-core": "^4.11.0"
+    "ytdl-core": "^4.11.5"
   }
 }
